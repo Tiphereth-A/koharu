@@ -155,19 +155,13 @@ export const getImportDocumentsUrl = (params?: ImportDocumentsParams) => {
     : `/api/v1/documents`
 }
 
-const uploadFilename = (value: Blob): string => {
-  const isFile = (value: Blob): value is File => 'name' in value
-  if (!isFile(value)) return 'blob'
-  return value.webkitRelativePath || value.name
-}
-
 export const importDocuments = async (
   importDocumentsBody: ImportDocumentsBody,
   params?: ImportDocumentsParams,
   options?: RequestInit,
 ): Promise<ImportResult> => {
   const formData = new FormData()
-  importDocumentsBody.files.forEach((value) => formData.append(`files`, value, uploadFilename(value)))
+  importDocumentsBody.files.forEach((value) => formData.append(`files`, value))
 
   return fetchApi<ImportResult>(getImportDocumentsUrl(params), {
     ...options,
