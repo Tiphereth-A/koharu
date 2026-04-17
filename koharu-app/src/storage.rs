@@ -393,7 +393,7 @@ fn assign_missing_orders(pages: &mut [Document], start: u32) {
     }
 }
 
-/// Normalize path without traversing the filesystem, remove prefix `../`, flatten path separators as `_`, and escape `_`/`%` inside components to keep boundaries collision-safe. Return [`None`] if the result is empty.
+/// Normalize a path lexically (without filesystem access): collapse `..`, ignore any extra `..` for security reasons, join components with `_`, and percent-escape `_`/`%` inside each component to keep boundaries collision-safe. Return [`None`] if the result is empty.
 fn sanitized_path_string(path: impl AsRef<Path>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for c in path.as_ref().components() {
