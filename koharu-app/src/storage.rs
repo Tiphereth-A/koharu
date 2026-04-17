@@ -393,12 +393,19 @@ fn assign_missing_orders(pages: &mut [Document], start: u32) {
     }
 }
 
-/// Normalize path without traversing the filesystem, remove prefix `../` and replace path separator with `_`, return [`None`] if the result is empty.
+/// Normalize path without traversing the filesystem, remove prefix `../`, flatten path separators as `_`, and escape `_`/`%` inside components to keep boundaries collision-safe. Return [`None`] if the result is empty.
 fn sanitized_path_string(path: impl AsRef<Path>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for c in path.as_ref().components() {
         match c {
-            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            Component::Normal(s) => {
+                parts.push(
+                    s.to_string_lossy()
+                        .into_owned()
+                        .replace('%', "%25")
+                        .replace('_', "%5F"),
+                );
+            }
             Component::ParentDir => {
                 parts.pop();
             }
@@ -497,6 +504,22 @@ mod tests {
         assert_eq!(
             sanitized_path_string(Path::new("../chapter2/page1")),
             Some("chapter2_page1".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitized_path_string_is_collision_safe_for_component_boundaries() {
+        assert_eq!(
+            sanitized_path_string(Path::new("a/b_c")),
+            Some("a_b%5Fc".to_string())
+        );
+        assert_eq!(
+            sanitized_path_string(Path::new("a_b/c")),
+            Some("a%5Fb_c".to_string())
+        );
+        assert_ne!(
+            sanitized_path_string(Path::new("a/b_c")),
+            sanitized_path_string(Path::new("a_b/c"))
         );
     }
 
