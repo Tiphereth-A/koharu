@@ -393,18 +393,13 @@ fn assign_missing_orders(pages: &mut [Document], start: u32) {
     }
 }
 
-/// Normalize a path lexically (without filesystem access): collapse `..`, ignore any extra `..` for security reasons, join components with `_`, and percent-escape `_`/`%` inside each component to keep boundaries collision-safe. Return [`None`] if the result is empty.
+/// Normalize a path lexically (without filesystem access): collapse `..`, ignore any extra `..` for security reasons, join components with `%2F`, and percent-escape `%` inside each component to keep boundaries collision-safe. Return [`None`] if the result is empty.
 fn sanitized_path_string(path: impl AsRef<Path>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for c in path.as_ref().components() {
         match c {
             Component::Normal(s) => {
-                parts.push(
-                    s.to_string_lossy()
-                        .into_owned()
-                        .replace('%', "%25")
-                        .replace('_', "%5F"),
-                );
+                parts.push(s.to_string_lossy().into_owned().replace('%', "%25"));
             }
             Component::ParentDir => {
                 parts.pop();
@@ -412,7 +407,7 @@ fn sanitized_path_string(path: impl AsRef<Path>) -> Option<String> {
             _ => {}
         }
     }
-    let result = parts.join("_");
+    let result = parts.join("%2F");
     if result.is_empty() {
         None
     } else {
@@ -491,7 +486,7 @@ mod tests {
     fn sanitized_path_string_joins_components_with_underscore() {
         assert_eq!(
             sanitized_path_string(Path::new("chapter1/page10")),
-            Some("chapter1_page10".to_string())
+            Some("chapter1%2Fpage10".to_string())
         );
     }
 
@@ -499,11 +494,11 @@ mod tests {
     fn sanitized_path_string_resolves_parent_dir_components() {
         assert_eq!(
             sanitized_path_string(Path::new("chapter1/draft/../page10")),
-            Some("chapter1_page10".to_string())
+            Some("chapter1%2Fpage10".to_string())
         );
         assert_eq!(
             sanitized_path_string(Path::new("../chapter2/page1")),
-            Some("chapter2_page1".to_string())
+            Some("chapter2%2Fpage1".to_string())
         );
     }
 
@@ -511,15 +506,19 @@ mod tests {
     fn sanitized_path_string_is_collision_safe_for_component_boundaries() {
         assert_eq!(
             sanitized_path_string(Path::new("a/b_c")),
-            Some("a_b%5Fc".to_string())
+            Some("a%2Fb_c".to_string())
         );
         assert_eq!(
             sanitized_path_string(Path::new("a_b/c")),
-            Some("a%5Fb_c".to_string())
+            Some("a_b%2Fc".to_string())
         );
-        assert_ne!(
-            sanitized_path_string(Path::new("a/b_c")),
-            sanitized_path_string(Path::new("a_b/c"))
+        assert_eq!(
+            sanitized_path_string(Path::new("a/b%c")),
+            Some("a%2Fb%25c".to_string())
+        );
+        assert_eq!(
+            sanitized_path_string(Path::new("a%b/c")),
+            Some("a%25b%2Fc".to_string())
         );
     }
 
@@ -680,8 +679,15 @@ mod tests {
         assert_eq!(
             names,
             [
-                "chp1_1", "chp1_2", "chp1_10", "chp2_1", "chp2_2", "chp2_10", "chp10_1", "chp10_2",
-                "chp10_10"
+                "chp1%2F1",
+                "chp1%2F2",
+                "chp1%2F10",
+                "chp2%2F1",
+                "chp2%2F2",
+                "chp2%2F10",
+                "chp10%2F1",
+                "chp10%2F2",
+                "chp10%2F10"
             ]
         );
         assert_eq!(orders, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -708,7 +714,7 @@ mod tests {
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         let orders: Vec<u32> = pages.iter().map(|p| p.order).collect();
 
-        assert_eq!(names, ["alpha", "beta", "chp2_1", "chp2_2"]);
+        assert_eq!(names, ["alpha", "beta", "chp2%2F1", "chp2%2F2"]);
         assert_eq!(orders, [3, 4, 5, 6]);
     }
 
@@ -732,11 +738,11 @@ mod tests {
 
         let imported = storage.import_files(files, true).await.unwrap();
         assert_eq!(imported.len(), 1);
-        assert_eq!(imported[0].name, "valid_1");
+        assert_eq!(imported[0].name, "valid%2F1");
 
         let pages = storage.list_pages().await;
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].name, "valid_1");
+        assert_eq!(pages[0].name, "valid%2F1");
         assert_eq!(pages[0].order, 1);
     }
 
