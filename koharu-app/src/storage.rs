@@ -1,5 +1,5 @@
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -285,10 +285,7 @@ impl Storage {
                 let (width, height) = reader.into_dimensions().ok()?;
                 let id = blake3::hash(&file.data).to_hex().to_string();
                 let source = self.images.store_bytes(&file.data).ok()?;
-                let name = Path::new(&file.name)
-                    .file_stem()?
-                    .to_string_lossy()
-                    .to_string();
+                let name = sanitized_path_string(Path::new(&file.name).with_extension(""))?;
                 Some(Document {
                     id,
                     name,
@@ -396,6 +393,26 @@ fn assign_missing_orders(pages: &mut [Document], start: u32) {
     }
 }
 
+/// Normalize path without traversing the filesystem, remove prefix `../` and replace path separator with `_`, return [`None`] if the result is empty.
+fn sanitized_path_string(path: impl AsRef<Path>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for c in path.as_ref().components() {
+        match c {
+            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                parts.pop();
+            }
+            _ => {}
+        }
+    }
+    let result = parts.join("_");
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +476,35 @@ mod tests {
         let mut pages = Vec::<Document>::new();
         assign_missing_orders(&mut pages, 0);
         assert!(pages.is_empty());
+    }
+
+    // ── sanitized_path_string ──────────────────────────────────────
+
+    #[test]
+    fn sanitized_path_string_joins_components_with_underscore() {
+        assert_eq!(
+            sanitized_path_string(Path::new("chapter1/page10")),
+            Some("chapter1_page10".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitized_path_string_resolves_parent_dir_components() {
+        assert_eq!(
+            sanitized_path_string(Path::new("chapter1/draft/../page10")),
+            Some("chapter1_page10".to_string())
+        );
+        assert_eq!(
+            sanitized_path_string(Path::new("../chapter2/page1")),
+            Some("chapter2_page1".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitized_path_string_returns_none_when_empty_after_normalization() {
+        assert_eq!(sanitized_path_string(Path::new("")), None);
+        assert_eq!(sanitized_path_string(Path::new(".")), None);
+        assert_eq!(sanitized_path_string(Path::new("chapter/..")), None);
     }
 
     // ── list_documents ──────────────────────────────────────────────
@@ -530,6 +576,16 @@ mod tests {
         (storage, dir)
     }
 
+    fn solid_png_bytes(seed: u8) -> Vec<u8> {
+        let pixel = image::Rgba([seed, seed, seed, 255]);
+        let image = image::RgbaImage::from_pixel(1, 1, pixel);
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
+    }
+
     #[tokio::test]
     async fn reorder_pages_assigns_sequential_orders() {
         let (storage, _dir) = open_test_storage(vec![
@@ -548,6 +604,117 @@ mod tests {
         assert_eq!(pages[1].order, 2);
         assert_eq!(pages[2].id, "b");
         assert_eq!(pages[2].order, 3);
+    }
+
+    #[tokio::test]
+    async fn import_files_sorts_by_relative_path_when_names_repeat_across_subfolders() {
+        let (storage, _dir) = open_test_storage(Vec::new());
+        let files = vec![
+            koharu_core::FileEntry {
+                name: "chp1/2.png".to_string(),
+                data: solid_png_bytes(1),
+            },
+            koharu_core::FileEntry {
+                name: "chp1/10.png".to_string(),
+                data: solid_png_bytes(2),
+            },
+            koharu_core::FileEntry {
+                name: "chp2/2.png".to_string(),
+                data: solid_png_bytes(3),
+            },
+            koharu_core::FileEntry {
+                name: "chp2/10.png".to_string(),
+                data: solid_png_bytes(4),
+            },
+            koharu_core::FileEntry {
+                name: "chp10/2.png".to_string(),
+                data: solid_png_bytes(5),
+            },
+            koharu_core::FileEntry {
+                name: "chp2/1.png".to_string(),
+                data: solid_png_bytes(6),
+            },
+            koharu_core::FileEntry {
+                name: "chp1/1.png".to_string(),
+                data: solid_png_bytes(7),
+            },
+            koharu_core::FileEntry {
+                name: "chp10/10.png".to_string(),
+                data: solid_png_bytes(8),
+            },
+            koharu_core::FileEntry {
+                name: "chp10/1.png".to_string(),
+                data: solid_png_bytes(9),
+            },
+        ];
+
+        storage.import_files(files, true).await.unwrap();
+
+        let pages = storage.list_pages().await;
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        let orders: Vec<u32> = pages.iter().map(|p| p.order).collect();
+
+        assert_eq!(
+            names,
+            [
+                "chp1_1", "chp1_2", "chp1_10", "chp2_1", "chp2_2", "chp2_10", "chp10_1", "chp10_2",
+                "chp10_10"
+            ]
+        );
+        assert_eq!(orders, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[tokio::test]
+    async fn import_files_append_keeps_existing_pages_and_appends_new_orders() {
+        let (storage, _dir) =
+            open_test_storage(vec![make_page("a", "alpha", 3), make_page("b", "beta", 4)]);
+        let files = vec![
+            koharu_core::FileEntry {
+                name: "chp2/2.png".to_string(),
+                data: solid_png_bytes(1),
+            },
+            koharu_core::FileEntry {
+                name: "chp2/1.png".to_string(),
+                data: solid_png_bytes(2),
+            },
+        ];
+
+        storage.import_files(files, false).await.unwrap();
+
+        let pages = storage.list_pages().await;
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        let orders: Vec<u32> = pages.iter().map(|p| p.order).collect();
+
+        assert_eq!(names, ["alpha", "beta", "chp2_1", "chp2_2"]);
+        assert_eq!(orders, [3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn import_files_skips_invalid_images_and_empty_normalized_names() {
+        let (storage, _dir) = open_test_storage(Vec::new());
+        let files = vec![
+            koharu_core::FileEntry {
+                name: "valid/1.png".to_string(),
+                data: solid_png_bytes(1),
+            },
+            koharu_core::FileEntry {
+                name: "".to_string(),
+                data: solid_png_bytes(2),
+            },
+            koharu_core::FileEntry {
+                name: "not-image.png".to_string(),
+                data: vec![1, 2, 3, 4],
+            },
+        ];
+
+        let imported = storage.import_files(files, true).await.unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "valid_1");
+
+        let pages = storage.list_pages().await;
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].name, "valid_1");
+        assert_eq!(pages[0].order, 1);
     }
 
     #[tokio::test]
